@@ -1,7 +1,6 @@
-
-import React, { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Stars, Sky, OrbitControls, Sparkles, Cloud, Environment } from '@react-three/drei';
+import { Stars, Sky, OrbitControls, Sparkles, Cloud } from '@react-three/drei';
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { CharacterData } from '../App';
@@ -18,12 +17,17 @@ type Weather = 'Clear' | 'Rain' | 'Snow';
 
 // --- 3D BLOCK CHARACTER UTILS ---
 
+interface UVMap {
+    uMin: number; uMax: number;
+    vMin: number; vMax: number;
+}
+
 const BoxWithUV: React.FC<{
   position?: [number, number, number];
   args: [number, number, number]; 
   texture: THREE.Texture | null;
-  uvRange: { u: [number, number], v: [number, number] }; 
-}> = ({ position, args, texture, uvRange }) => {
+  uvs: { front: UVMap, back: UVMap, side: UVMap, top: UVMap, bottom: UVMap };
+}> = ({ position, args, texture, uvs }) => {
   const meshRef = useRef<THREE.Mesh>(null);
 
   useLayoutEffect(() => {
@@ -32,37 +36,34 @@ const BoxWithUV: React.FC<{
     const geo = meshRef.current.geometry;
     const uvAttribute = geo.attributes.uv;
     
-    const uFrontMin = 0.05; const uFrontMax = 0.45;
-    const uBackMin = 0.55; const uBackMax = 0.95;
-    
-    const vMin = uvRange.v[0];
-    const vMax = uvRange.v[1];
-
-    const setFaceUV = (faceIdx: number, uMin: number, uMax: number, vMin: number, vMax: number, flipX = false) => {
-       const offset = faceIdx * 4;
-       const u0 = flipX ? uMax : uMin;
-       const u1 = flipX ? uMin : uMax;
-       
-       uvAttribute.setXY(offset + 0, u0, vMax);
-       uvAttribute.setXY(offset + 1, u1, vMax);
-       uvAttribute.setXY(offset + 2, u0, vMin);
-       uvAttribute.setXY(offset + 3, u1, vMin);
+    const mapFace = (faceIndex: number, map: UVMap, flipX = false) => {
+        const offset = faceIndex * 4;
+        const u0 = flipX ? map.uMax : map.uMin;
+        const u1 = flipX ? map.uMin : map.uMax;
+        const v0 = map.vMin;
+        const v1 = map.vMax;
+        
+        uvAttribute.setXY(offset + 0, u0, v1); // TL
+        uvAttribute.setXY(offset + 1, u1, v1); // TR
+        uvAttribute.setXY(offset + 2, u0, v0); // BL
+        uvAttribute.setXY(offset + 3, u1, v0); // BR
     };
 
-    setFaceUV(4, uFrontMin, uFrontMax, vMin, vMax);
-    setFaceUV(5, uBackMin, uBackMax, vMin, vMax, true); 
-    setFaceUV(0, uFrontMax - 0.02, uFrontMax, vMin, vMax);
-    setFaceUV(1, uFrontMin, uFrontMin + 0.02, vMin, vMax);
-    setFaceUV(2, uFrontMin, uFrontMax, vMax - 0.02, vMax);
-    setFaceUV(3, uFrontMin, uFrontMax, vMin, vMin + 0.02);
+    // Front (4), Back (5), Right (0), Left (1), Top (2), Bottom (3)
+    mapFace(4, uvs.front);
+    mapFace(5, uvs.back); 
+    mapFace(0, uvs.side);
+    mapFace(1, uvs.side);
+    mapFace(2, uvs.top);
+    mapFace(3, uvs.bottom);
 
     uvAttribute.needsUpdate = true;
-  }, [texture, uvRange]);
+  }, [texture, uvs]);
 
   return (
     <mesh ref={meshRef} position={position} castShadow receiveShadow>
       <boxGeometry args={args} />
-      <meshStandardMaterial map={texture} roughness={0.8} metalness={0.1} />
+      <meshStandardMaterial map={texture} roughness={0.6} metalness={0.2} />
     </mesh>
   );
 };
@@ -74,19 +75,31 @@ const BlockyCharacter: React.FC<{
   const group = useRef<THREE.Group>(null);
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   
+  // Refs for hierarchical animation
   const headRef = useRef<THREE.Group>(null);
   const bodyRef = useRef<THREE.Group>(null);
-  const armLRef = useRef<THREE.Group>(null);
+  
+  const armLRef = useRef<THREE.Group>(null);      // Shoulder Pivot
+  const lowerArmLRef = useRef<THREE.Group>(null); // Elbow Pivot
+  
   const armRRef = useRef<THREE.Group>(null);
-  const legLRef = useRef<THREE.Group>(null);
+  const lowerArmRRef = useRef<THREE.Group>(null);
+  
+  const legLRef = useRef<THREE.Group>(null);      // Hip Pivot
+  const lowerLegLRef = useRef<THREE.Group>(null); // Knee Pivot
+  
   const legRRef = useRef<THREE.Group>(null);
+  const lowerLegRRef = useRef<THREE.Group>(null);
 
   useEffect(() => {
     const loader = new THREE.TextureLoader();
     loader.load(textureUrl, (tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
-      tex.magFilter = THREE.NearestFilter; 
-      tex.minFilter = THREE.NearestFilter;
+      // High Quality Filtering for less pixelated look
+      tex.minFilter = THREE.LinearMipMapLinearFilter; 
+      tex.magFilter = THREE.LinearFilter; 
+      tex.generateMipmaps = true;
+      tex.anisotropy = 16;
       setTexture(tex);
     });
   }, [textureUrl]);
@@ -97,74 +110,238 @@ const BlockyCharacter: React.FC<{
      const speed = 12; 
      
      const isWalk = isMoving;
-     const rot = isWalk ? Math.sin(t * speed) : 0;
-     const bounce = isWalk ? Math.abs(Math.sin(t * speed * 2)) * 0.05 : 0;
+     const bounce = isWalk ? Math.abs(Math.sin(t * speed * 2)) * 0.05 : Math.sin(t) * 0.01;
+     const bodyTilt = isWalk ? Math.sin(t * speed) * 0.02 : 0;
 
+     // Head Animation
      if (headRef.current) {
-         headRef.current.rotation.y = Math.sin(t * 0.5) * 0.1;
-         headRef.current.position.y = 1.5 + bounce;
+         headRef.current.rotation.y = Math.sin(t * 0.3) * 0.05;
+         headRef.current.rotation.z = Math.sin(t * 0.1) * 0.02;
+         headRef.current.position.y = 1.55 + bounce;
      }
      
+     // Body Animation
      if (bodyRef.current) {
-         bodyRef.current.rotation.y = rot * 0.05;
-         bodyRef.current.position.y = 0.75 + bounce;
+         bodyRef.current.rotation.z = bodyTilt;
+         bodyRef.current.rotation.y = Math.sin(t * speed) * 0.05; // Counter twist
+         bodyRef.current.position.y = 0.85 + bounce;
      }
 
-     const limbRange = 0.6;
-
+     const limbRange = 0.8; // Increased swing range
+     
+     // --- ARMS ---
+     // Left Arm
      if (armLRef.current) {
-         armLRef.current.rotation.x = isWalk ? -rot * limbRange : Math.sin(t) * 0.05;
-         armLRef.current.position.y = 1.35 + bounce;
+         const rot = isWalk ? Math.sin(t * speed) * limbRange : Math.sin(t) * 0.05;
+         armLRef.current.rotation.x = -rot;
+         armLRef.current.rotation.z = 0.1; // Slight A-pose
+         armLRef.current.position.y = 1.4 + bounce;
+         
+         // Elbow Bend (Natural curl when swinging forward)
+         if (lowerArmLRef.current) {
+            const bend = isWalk ? Math.max(0, Math.sin(t * speed)) * 0.5 : 0.1;
+            lowerArmLRef.current.rotation.x = -bend; 
+         }
      }
+     
+     // Right Arm
      if (armRRef.current) {
-         armRRef.current.rotation.x = isWalk ? rot * limbRange : -Math.sin(t) * 0.05;
-         armRRef.current.position.y = 1.35 + bounce;
+         const rot = isWalk ? Math.sin(t * speed + Math.PI) * limbRange : -Math.sin(t) * 0.05;
+         armRRef.current.rotation.x = -rot;
+         armRRef.current.rotation.z = -0.1;
+         armRRef.current.position.y = 1.4 + bounce;
+
+         // Elbow Bend
+         if (lowerArmRRef.current) {
+            const bend = isWalk ? Math.max(0, Math.sin(t * speed + Math.PI)) * 0.5 : 0.1;
+            lowerArmRRef.current.rotation.x = -bend;
+         }
      }
 
+     // --- LEGS ---
+     // Left Leg
      if (legLRef.current) {
-         legLRef.current.rotation.x = isWalk ? rot * limbRange : 0;
+         const rot = isWalk ? Math.sin(t * speed) * limbRange : 0;
+         legLRef.current.rotation.x = rot;
          legLRef.current.position.y = 0.75 + bounce;
+
+         // Knee Bend (Bends when leg is moving back/up)
+         if (lowerLegLRef.current) {
+            const kneeBend = isWalk ? Math.max(0, Math.sin(t * speed - 0.5)) * 1.0 : 0;
+            lowerLegLRef.current.rotation.x = kneeBend;
+         }
      }
+     
+     // Right Leg
      if (legRRef.current) {
-         legRRef.current.rotation.x = isWalk ? -rot * limbRange : 0;
+         const rot = isWalk ? Math.sin(t * speed + Math.PI) * limbRange : 0;
+         legRRef.current.rotation.x = rot;
          legRRef.current.position.y = 0.75 + bounce;
+
+         if (lowerLegRRef.current) {
+             const kneeBend = isWalk ? Math.max(0, Math.sin(t * speed + Math.PI - 0.5)) * 1.0 : 0;
+             lowerLegRRef.current.rotation.x = kneeBend;
+         }
      }
   });
 
   if (!texture) return null;
 
-  const uvHead: { u: [number, number]; v: [number, number] } = { u: [0, 1], v: [0.75, 1.0] };
-  const uvBody: { u: [number, number]; v: [number, number] } = { u: [0, 1], v: [0.40, 0.75] };
-  const uvLegs: { u: [number, number]; v: [number, number] } = { u: [0, 1], v: [0.0, 0.40] };
+  // --- UV DEFINITIONS ---
+  // Image Layout: Left Half = Front, Right Half = Back
+  // Heights: Top 0.75-1.0 (Head), Mid 0.40-0.75 (Torso/Arms), Bot 0.0-0.40 (Legs)
+  
+  const HEAD_V = { vMin: 0.75, vMax: 1.0 };
+  const BODY_V = { vMin: 0.40, vMax: 0.75 };
+  const LEG_V  = { vMin: 0.0, vMax: 0.40 };
+
+  // Limb Splits (Vertical for joints)
+  const ARM_SPLIT = 0.58; // Y-split for elbow
+  const LEG_SPLIT = 0.20; // Y-split for knee
+
+  const uvHead = { 
+      front: { uMin: 0.125, uMax: 0.375, ...HEAD_V },
+      back: { uMin: 0.625, uMax: 0.875, ...HEAD_V },
+      side: { uMin: 0.0, uMax: 0.125, ...HEAD_V },
+      top: { uMin: 0.125, uMax: 0.375, vMin: 0.9, vMax: 1.0 }, // Fake top
+      bottom: { uMin: 0.125, uMax: 0.375, vMin: 0.75, vMax: 0.8 }
+  };
+
+  const uvTorso = {
+      front: { uMin: 0.15, uMax: 0.35, ...BODY_V },
+      back: { uMin: 0.65, uMax: 0.85, ...BODY_V },
+      side: { uMin: 0.12, uMax: 0.15, ...BODY_V },
+      top: { uMin: 0.15, uMax: 0.35, vMin: 0.74, vMax: 0.75 },
+      bottom: { uMin: 0.15, uMax: 0.35, vMin: 0.40, vMax: 0.41 }
+  };
+
+  // --- ARM UVs ---
+  // Upper Arm: Top half of arm texture
+  const uvUpperArmR = {
+      front: { uMin: 0.0, uMax: 0.15, vMin: ARM_SPLIT, vMax: 0.75 },
+      back: { uMin: 0.85, uMax: 1.0, vMin: ARM_SPLIT, vMax: 0.75 },
+      side: { uMin: 0.0, uMax: 0.05, vMin: ARM_SPLIT, vMax: 0.75 },
+      top: { uMin: 0.0, uMax: 0.15, vMin: 0.74, vMax: 0.75 },
+      bottom: { uMin: 0.0, uMax: 0.15, vMin: ARM_SPLIT, vMax: ARM_SPLIT+0.01 }
+  };
+  const uvLowerArmR = {
+      front: { uMin: 0.0, uMax: 0.15, vMin: 0.40, vMax: ARM_SPLIT },
+      back: { uMin: 0.85, uMax: 1.0, vMin: 0.40, vMax: ARM_SPLIT },
+      side: { uMin: 0.0, uMax: 0.05, vMin: 0.40, vMax: ARM_SPLIT },
+      top: { uMin: 0.0, uMax: 0.15, vMin: ARM_SPLIT, vMax: ARM_SPLIT+0.01 },
+      bottom: { uMin: 0.0, uMax: 0.15, vMin: 0.40, vMax: 0.41 } // Hand
+  };
+
+  const uvUpperArmL = {
+      front: { uMin: 0.35, uMax: 0.50, vMin: ARM_SPLIT, vMax: 0.75 },
+      back: { uMin: 0.50, uMax: 0.65, vMin: ARM_SPLIT, vMax: 0.75 },
+      side: { uMin: 0.45, uMax: 0.50, vMin: ARM_SPLIT, vMax: 0.75 },
+      top: { uMin: 0.35, uMax: 0.50, vMin: 0.74, vMax: 0.75 },
+      bottom: { uMin: 0.35, uMax: 0.50, vMin: ARM_SPLIT, vMax: ARM_SPLIT+0.01 }
+  };
+  const uvLowerArmL = {
+      front: { uMin: 0.35, uMax: 0.50, vMin: 0.40, vMax: ARM_SPLIT },
+      back: { uMin: 0.50, uMax: 0.65, vMin: 0.40, vMax: ARM_SPLIT },
+      side: { uMin: 0.45, uMax: 0.50, vMin: 0.40, vMax: ARM_SPLIT },
+      top: { uMin: 0.35, uMax: 0.50, vMin: ARM_SPLIT, vMax: ARM_SPLIT+0.01 },
+      bottom: { uMin: 0.35, uMax: 0.50, vMin: 0.40, vMax: 0.41 }
+  };
+
+  // --- LEG UVs ---
+  const uvUpperLegR = {
+      front: { uMin: 0.05, uMax: 0.25, vMin: LEG_SPLIT, vMax: 0.40 },
+      back: { uMin: 0.75, uMax: 0.95, vMin: LEG_SPLIT, vMax: 0.40 },
+      side: { uMin: 0.0, uMax: 0.05, vMin: LEG_SPLIT, vMax: 0.40 },
+      top: { uMin: 0.05, uMax: 0.25, vMin: 0.39, vMax: 0.40 },
+      bottom: { uMin: 0.05, uMax: 0.25, vMin: LEG_SPLIT, vMax: LEG_SPLIT+0.01 }
+  };
+  const uvLowerLegR = {
+      front: { uMin: 0.05, uMax: 0.25, vMin: 0.0, vMax: LEG_SPLIT },
+      back: { uMin: 0.75, uMax: 0.95, vMin: 0.0, vMax: LEG_SPLIT },
+      side: { uMin: 0.0, uMax: 0.05, vMin: 0.0, vMax: LEG_SPLIT },
+      top: { uMin: 0.05, uMax: 0.25, vMin: LEG_SPLIT, vMax: LEG_SPLIT+0.01 },
+      bottom: { uMin: 0.05, uMax: 0.25, vMin: 0.0, vMax: 0.01 } // Foot
+  };
+
+  const uvUpperLegL = {
+      front: { uMin: 0.25, uMax: 0.45, vMin: LEG_SPLIT, vMax: 0.40 },
+      back: { uMin: 0.55, uMax: 0.75, vMin: LEG_SPLIT, vMax: 0.40 },
+      side: { uMin: 0.45, uMax: 0.50, vMin: LEG_SPLIT, vMax: 0.40 },
+      top: { uMin: 0.25, uMax: 0.45, vMin: 0.39, vMax: 0.40 },
+      bottom: { uMin: 0.25, uMax: 0.45, vMin: LEG_SPLIT, vMax: LEG_SPLIT+0.01 }
+  };
+  const uvLowerLegL = {
+      front: { uMin: 0.25, uMax: 0.45, vMin: 0.0, vMax: LEG_SPLIT },
+      back: { uMin: 0.55, uMax: 0.75, vMin: 0.0, vMax: LEG_SPLIT },
+      side: { uMin: 0.45, uMax: 0.50, vMin: 0.0, vMax: LEG_SPLIT },
+      top: { uMin: 0.25, uMax: 0.45, vMin: LEG_SPLIT, vMax: LEG_SPLIT+0.01 },
+      bottom: { uMin: 0.25, uMax: 0.45, vMin: 0.0, vMax: 0.01 }
+  };
 
   return (
     <group ref={group}>
+        {/* Head */}
         <group ref={headRef} position={[0, 1.5, 0]}>
-             <BoxWithUV args={[0.5, 0.5, 0.5]} texture={texture} uvRange={uvHead} />
+             <BoxWithUV args={[0.5, 0.5, 0.5]} texture={texture} uvs={uvHead} />
         </group>
+        
+        {/* Body - Thicker depth for volume */}
         <group ref={bodyRef} position={[0, 0.75, 0]}>
-            <BoxWithUV args={[0.5, 0.75, 0.25]} texture={texture} uvRange={uvBody} />
+            <BoxWithUV args={[0.4, 0.75, 0.28]} texture={texture} uvs={uvTorso} />
         </group>
-        <group ref={armLRef} position={[-0.4, 1.35, 0]}>
-            <group position={[0, -0.3, 0]}> 
-                <BoxWithUV args={[0.25, 0.75, 0.25]} texture={texture} uvRange={uvBody} />
+        
+        {/* Left Arm (Jointed) */}
+        <group ref={armLRef} position={[-0.32, 1.35, 0]}>
+            {/* Upper Arm */}
+            <group position={[0, -0.175, 0]}> 
+                <BoxWithUV args={[0.18, 0.35, 0.18]} texture={texture} uvs={uvUpperArmL} />
+                {/* Lower Arm Pivot */}
+                <group ref={lowerArmLRef} position={[0, -0.175, 0]}>
+                    <group position={[0, -0.175, 0]}>
+                        <BoxWithUV args={[0.16, 0.35, 0.16]} texture={texture} uvs={uvLowerArmL} />
+                    </group>
+                </group>
             </group>
         </group>
-        <group ref={armRRef} position={[0.4, 1.35, 0]}>
-            <group position={[0, -0.3, 0]}>
-                <BoxWithUV args={[0.25, 0.75, 0.25]} texture={texture} uvRange={uvBody} />
+        
+        {/* Right Arm (Jointed) */}
+        <group ref={armRRef} position={[0.32, 1.35, 0]}>
+            <group position={[0, -0.175, 0]}>
+                <BoxWithUV args={[0.18, 0.35, 0.18]} texture={texture} uvs={uvUpperArmR} />
+                <group ref={lowerArmRRef} position={[0, -0.175, 0]}>
+                    <group position={[0, -0.175, 0]}>
+                         <BoxWithUV args={[0.16, 0.35, 0.16]} texture={texture} uvs={uvLowerArmR} />
+                    </group>
+                </group>
             </group>
         </group>
-        <group ref={legLRef} position={[-0.15, 0.75, 0]}>
-            <group position={[0, -0.375, 0]}>
-                <BoxWithUV args={[0.25, 0.75, 0.25]} texture={texture} uvRange={uvLegs} />
+        
+        {/* Left Leg (Jointed) */}
+        <group ref={legLRef} position={[-0.11, 0.75, 0]}>
+            {/* Upper Leg */}
+            <group position={[0, -0.19, 0]}>
+                <BoxWithUV args={[0.20, 0.38, 0.20]} texture={texture} uvs={uvUpperLegL} />
+                {/* Knee Pivot */}
+                <group ref={lowerLegLRef} position={[0, -0.19, 0]}>
+                    <group position={[0, -0.19, 0]}>
+                        <BoxWithUV args={[0.18, 0.38, 0.18]} texture={texture} uvs={uvLowerLegL} />
+                    </group>
+                </group>
             </group>
         </group>
-        <group ref={legRRef} position={[0.15, 0.75, 0]}>
-            <group position={[0, -0.375, 0]}>
-                <BoxWithUV args={[0.25, 0.75, 0.25]} texture={texture} uvRange={uvLegs} />
+        
+        {/* Right Leg (Jointed) */}
+        <group ref={legRRef} position={[0.11, 0.75, 0]}>
+            <group position={[0, -0.19, 0]}>
+                <BoxWithUV args={[0.20, 0.38, 0.20]} texture={texture} uvs={uvUpperLegR} />
+                <group ref={lowerLegRRef} position={[0, -0.19, 0]}>
+                    <group position={[0, -0.19, 0]}>
+                        <BoxWithUV args={[0.18, 0.38, 0.18]} texture={texture} uvs={uvLowerLegR} />
+                    </group>
+                </group>
             </group>
         </group>
+        
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
             <circleGeometry args={[0.6, 32]} />
             <meshBasicMaterial color="black" opacity={0.3} transparent />
@@ -396,11 +573,6 @@ const EnvironmentController: React.FC<{ time: number, season: Season, weather: W
        {isClear && season === 'Autumn' && (
          <Sparkles count={200} scale={60} size={6} speed={0.2} opacity={0.7} color="#d35400" position={[0, 10, 0]} noise={1} />
        )}
-       
-       {/* Fireflies */}
-       {isClear && isNight && (season === 'Spring' || season === 'Summer') && (
-         <Sparkles count={100} scale={50} size={3} speed={0.1} opacity={0.6} color="#aaff00" position={[0, 2, 0]} />
-       )}
     </>
   );
 };
@@ -427,9 +599,19 @@ const getSeasonalColor = (baseColor: string, type: string, season: Season, biome
 };
 
 // Memoize chunk to prevent re-renders every frame, only update when season changes
-const Chunk = React.memo(({ data, position, season }: { data: ChunkData, position: [number, number, number], season: Season }) => {
+const Chunk = React.memo(({ data, position, season, isNight, weather }: { 
+    data: ChunkData, 
+    position: [number, number, number], 
+    season: Season,
+    isNight: boolean,
+    weather: Weather
+}) => {
   
   const groundColor = getSeasonalColor(data.groundColor, 'ground', season, data.biomeType);
+  
+  // Fireflies Logic: Only appear at Night, in Clear weather, in Spring/Summer, in specific biomes
+  const showFireflies = isNight && weather === 'Clear' && (season === 'Spring' || season === 'Summer') 
+                        && ['forest', 'plains', 'swamp'].includes(data.biomeType);
 
   return (
     <group position={position}>
@@ -450,8 +632,13 @@ const Chunk = React.memo(({ data, position, season }: { data: ChunkData, positio
         </mesh>
       )}
       
+      {/* Biome Atmosphere Particles */}
       {data.biomeType === 'magical' && (
          <Sparkles count={50} scale={CHUNK_SIZE} size={6} speed={0.4} opacity={0.5} color="#bfa2db" position={[0, 5, 0]} />
+      )}
+
+      {showFireflies && (
+          <Sparkles count={30} scale={[CHUNK_SIZE, 5, CHUNK_SIZE]} size={4} speed={0.4} opacity={0.8} color="#aaff00" position={[0, 2, 0]} noise={0.2} />
       )}
 
       {/* Procedural Objects */}
@@ -594,7 +781,12 @@ const Chunk = React.memo(({ data, position, season }: { data: ChunkData, positio
       })}
     </group>
   );
-}, (prev, next) => prev.data === next.data && prev.season === next.season);
+}, (prev, next) => {
+    return prev.data === next.data && 
+           prev.season === next.season && 
+           prev.isNight === next.isNight &&
+           prev.weather === next.weather;
+});
 
 
 // --- Main World Component ---
@@ -684,6 +876,8 @@ export const GameWorld: React.FC<GameWorldProps> = ({ character }) => {
       }
   }
 
+  const isNight = time < 5.5 || time > 18.5;
+
   return (
     <div className="w-full h-full relative bg-black">
       <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 8, 12], fov: 50 }}>
@@ -708,7 +902,16 @@ export const GameWorld: React.FC<GameWorldProps> = ({ character }) => {
           const chunk = chunks.get(key);
           if (!chunk) return null;
           const [cx, cz] = key.split(',').map(Number);
-          return <Chunk key={key} data={chunk} position={[cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE]} season={season} />;
+          return (
+            <Chunk 
+                key={key} 
+                data={chunk} 
+                position={[cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE]} 
+                season={season} 
+                isNight={isNight}
+                weather={weather}
+            />
+          );
         })}
         
         <fog attach="fog" args={[season === 'Winter' ? '#e0fbfc' : weather === 'Rain' ? '#1e293b' : '#0f172a', 10, 70]} />
