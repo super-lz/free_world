@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Stars, Sky, OrbitControls, Sparkles, Cloud, Environment } from '@react-three/drei';
@@ -6,19 +7,22 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { CharacterData } from '../App';
 import { generateChunkData, ChunkData, CHUNK_SIZE } from '../utils/worldGen';
 import { Minimap } from './Minimap';
+import { Sun, Moon, CloudRain, Snowflake, Wind, Leaf, Clock, Play, Pause, Zap } from 'lucide-react';
 
 interface GameWorldProps {
   character: CharacterData;
 }
 
+type Season = 'Spring' | 'Summer' | 'Autumn' | 'Winter';
+type Weather = 'Clear' | 'Rain' | 'Snow';
+
 // --- 3D BLOCK CHARACTER UTILS ---
 
-// A custom Box component that re-maps UVs to support "Split Texture" (Left=Front, Right=Back)
 const BoxWithUV: React.FC<{
   position?: [number, number, number];
-  args: [number, number, number]; // width, height, depth
+  args: [number, number, number]; 
   texture: THREE.Texture | null;
-  uvRange: { u: [number, number], v: [number, number] }; // The region of the texture this part uses
+  uvRange: { u: [number, number], v: [number, number] }; 
 }> = ({ position, args, texture, uvRange }) => {
   const meshRef = useRef<THREE.Mesh>(null);
 
@@ -26,40 +30,16 @@ const BoxWithUV: React.FC<{
     if (!meshRef.current) return;
     
     const geo = meshRef.current.geometry;
-    // BoxGeometry has 24 vertices (4 per face * 6 faces)
-    // Face Order in ThreeJS BoxGeometry (usually):
-    // 0: +x (Right), 1: -x (Left), 2: +y (Top), 3: -y (Bottom), 4: +z (Front), 5: -z (Back)
-    // Each face has 4 vertices.
-    
     const uvAttribute = geo.attributes.uv;
     
-    // Texture Layout from AI:
-    // [  FRONT (Left Half)  |  BACK (Right Half)  ]
-    // u: 0.0 -> 0.5         |  u: 0.5 -> 1.0
-    
-    // We pass in uvRange for the vertical slice (e.g. Head is top, Legs bottom)
-    // uvRange.v = [ymin, ymax]
-    
-    const uFrontMin = 0.05; const uFrontMax = 0.45; // Slight padding to avoid bleeding
+    const uFrontMin = 0.05; const uFrontMax = 0.45;
     const uBackMin = 0.55; const uBackMax = 0.95;
     
     const vMin = uvRange.v[0];
     const vMax = uvRange.v[1];
 
-    // Helper to set UVs for a specific face index (0-5)
     const setFaceUV = (faceIdx: number, uMin: number, uMax: number, vMin: number, vMax: number, flipX = false) => {
        const offset = faceIdx * 4;
-       // Standard quad mapping: (0,1), (1,1), (0,0), (1,0) -- order depends on geometry construction
-       // BoxGeometry non-indexed vertices order:
-       // 0: top-left, 1: top-right, 2: bottom-left, 3: bottom-right (roughly)
-       // Let's just map corners.
-       
-       // Correct mapping for ThreeJS Box:
-       // 0: (0, 1) -> top-left
-       // 1: (1, 1) -> top-right
-       // 2: (0, 0) -> bottom-left
-       // 3: (1, 0) -> bottom-right
-       
        const u0 = flipX ? uMax : uMin;
        const u1 = flipX ? uMin : uMax;
        
@@ -69,23 +49,11 @@ const BoxWithUV: React.FC<{
        uvAttribute.setXY(offset + 3, u1, vMin);
     };
 
-    // 4: Front Face (+Z) -> Maps to Left Half of texture
     setFaceUV(4, uFrontMin, uFrontMax, vMin, vMax);
-    
-    // 5: Back Face (-Z) -> Maps to Right Half of texture
-    setFaceUV(5, uBackMin, uBackMax, vMin, vMax, true); // Flip X for back so it matches correctly?
-
-    // 0: Right Face (+X) -> Sample edge of Front or Back? Let's sample the "side" between them?
-    // Or just use the edge pixel of the front face to extend color.
+    setFaceUV(5, uBackMin, uBackMax, vMin, vMax, true); 
     setFaceUV(0, uFrontMax - 0.02, uFrontMax, vMin, vMax);
-
-    // 1: Left Face (-X)
     setFaceUV(1, uFrontMin, uFrontMin + 0.02, vMin, vMax);
-
-    // 2: Top Face (+Y) -> Sample top row of front
     setFaceUV(2, uFrontMin, uFrontMax, vMax - 0.02, vMax);
-
-    // 3: Bottom Face (-Y) -> Sample bottom row
     setFaceUV(3, uFrontMin, uFrontMax, vMin, vMin + 0.02);
 
     uvAttribute.needsUpdate = true;
@@ -99,7 +67,6 @@ const BoxWithUV: React.FC<{
   );
 };
 
-
 const BlockyCharacter: React.FC<{ 
   textureUrl: string; 
   isMoving: boolean;
@@ -107,9 +74,8 @@ const BlockyCharacter: React.FC<{
   const group = useRef<THREE.Group>(null);
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
   
-  // Animation Refs
   const headRef = useRef<THREE.Group>(null);
-  const bodyRef = useRef<THREE.Group>(null); // Includes Arms/Legs? No, separate hierarchy.
+  const bodyRef = useRef<THREE.Group>(null);
   const armLRef = useRef<THREE.Group>(null);
   const armRRef = useRef<THREE.Group>(null);
   const legLRef = useRef<THREE.Group>(null);
@@ -119,7 +85,7 @@ const BlockyCharacter: React.FC<{
     const loader = new THREE.TextureLoader();
     loader.load(textureUrl, (tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
-      tex.magFilter = THREE.NearestFilter; // Pixel art look
+      tex.magFilter = THREE.NearestFilter; 
       tex.minFilter = THREE.NearestFilter;
       setTexture(tex);
     });
@@ -128,19 +94,17 @@ const BlockyCharacter: React.FC<{
   useFrame((state) => {
      if (!group.current) return;
      const t = state.clock.elapsedTime;
-     const speed = 12; // Faster walk cycle for blocks
+     const speed = 12; 
      
      const isWalk = isMoving;
      const rot = isWalk ? Math.sin(t * speed) : 0;
      const bounce = isWalk ? Math.abs(Math.sin(t * speed * 2)) * 0.05 : 0;
 
-     // Head Bob
      if (headRef.current) {
          headRef.current.rotation.y = Math.sin(t * 0.5) * 0.1;
          headRef.current.position.y = 1.5 + bounce;
      }
      
-     // Body 
      if (bodyRef.current) {
          bodyRef.current.rotation.y = rot * 0.05;
          bodyRef.current.position.y = 0.75 + bounce;
@@ -148,10 +112,8 @@ const BlockyCharacter: React.FC<{
 
      const limbRange = 0.6;
 
-     // Arms (Opposite to legs)
      if (armLRef.current) {
          armLRef.current.rotation.x = isWalk ? -rot * limbRange : Math.sin(t) * 0.05;
-         // Link to body bounce
          armLRef.current.position.y = 1.35 + bounce;
      }
      if (armRRef.current) {
@@ -159,7 +121,6 @@ const BlockyCharacter: React.FC<{
          armRRef.current.position.y = 1.35 + bounce;
      }
 
-     // Legs
      if (legLRef.current) {
          legLRef.current.rotation.x = isWalk ? rot * limbRange : 0;
          legLRef.current.position.y = 0.75 + bounce;
@@ -172,62 +133,38 @@ const BlockyCharacter: React.FC<{
 
   if (!texture) return null;
 
-  // Dimensions (Minecraft-ish scale)
-  // Total height ~ 1.8 units
-  
-  // UV Mappings (Vertical percentage of the image)
-  // Head: Top 25%
   const uvHead: { u: [number, number]; v: [number, number] } = { u: [0, 1], v: [0.75, 1.0] };
-  // Body: Middle-Top 35%
   const uvBody: { u: [number, number]; v: [number, number] } = { u: [0, 1], v: [0.40, 0.75] };
-  // Arms: Same as body roughly, but maybe sampled differently? We'll reuse Body region for simplicity or slightly shifted.
-  // Let's use Body region for Arms too, it usually matches color.
-  // Legs: Bottom 40%
   const uvLegs: { u: [number, number]; v: [number, number] } = { u: [0, 1], v: [0.0, 0.40] };
 
   return (
     <group ref={group}>
-        {/* HEAD */}
         <group ref={headRef} position={[0, 1.5, 0]}>
              <BoxWithUV args={[0.5, 0.5, 0.5]} texture={texture} uvRange={uvHead} />
         </group>
-
-        {/* BODY */}
         <group ref={bodyRef} position={[0, 0.75, 0]}>
             <BoxWithUV args={[0.5, 0.75, 0.25]} texture={texture} uvRange={uvBody} />
         </group>
-
-        {/* LEFT ARM */}
         <group ref={armLRef} position={[-0.4, 1.35, 0]}>
-            {/* Pivot is at top of arm */}
             <group position={[0, -0.3, 0]}> 
                 <BoxWithUV args={[0.25, 0.75, 0.25]} texture={texture} uvRange={uvBody} />
             </group>
         </group>
-
-        {/* RIGHT ARM */}
         <group ref={armRRef} position={[0.4, 1.35, 0]}>
             <group position={[0, -0.3, 0]}>
                 <BoxWithUV args={[0.25, 0.75, 0.25]} texture={texture} uvRange={uvBody} />
             </group>
         </group>
-
-        {/* LEFT LEG */}
         <group ref={legLRef} position={[-0.15, 0.75, 0]}>
-            {/* Pivot at hip */}
             <group position={[0, -0.375, 0]}>
                 <BoxWithUV args={[0.25, 0.75, 0.25]} texture={texture} uvRange={uvLegs} />
             </group>
         </group>
-
-        {/* RIGHT LEG */}
         <group ref={legRRef} position={[0.15, 0.75, 0]}>
             <group position={[0, -0.375, 0]}>
                 <BoxWithUV args={[0.25, 0.75, 0.25]} texture={texture} uvRange={uvLegs} />
             </group>
         </group>
-        
-        {/* Shadow */}
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
             <circleGeometry args={[0.6, 32]} />
             <meshBasicMaterial color="black" opacity={0.3} transparent />
@@ -248,7 +185,6 @@ const Player: React.FC<{
   const [isMoving, setIsMoving] = useState(false);
   const { camera } = useThree();
   
-  // Input Handling
   const keys = useRef<{ [key: string]: boolean }>({});
   useEffect(() => {
     const down = (e: KeyboardEvent) => { keys.current[e.code] = true; };
@@ -269,7 +205,6 @@ const Player: React.FC<{
     let newZ = pos[2];
     let moving = false;
 
-    // Movement relative to camera
     const forward = new THREE.Vector3();
     const right = new THREE.Vector3();
     camera.getWorldDirection(forward);
@@ -301,7 +236,6 @@ const Player: React.FC<{
     setIsMoving(moving);
 
     if (moving) {
-        // Rotate character to face movement direction
         const targetRotation = Math.atan2(newX - pos[0], newZ - pos[2]);
         let diff = targetRotation - ref.current.rotation.y;
         while (diff > Math.PI) diff -= Math.PI * 2;
@@ -316,7 +250,6 @@ const Player: React.FC<{
     ref.current.position.z = THREE.MathUtils.lerp(ref.current.position.z, newZ, 0.25);
     ref.current.position.y = 0;
 
-    // Camera Follow
     if (controlsRef.current) {
         const target = new THREE.Vector3(newX, 2, newZ); 
         controlsRef.current.target.lerp(target, 0.1);
@@ -339,7 +272,7 @@ const Player: React.FC<{
              ref.current.position.set(initialPos[0], 0, initialPos[2]);
          }
      }
-  }, [initialPos]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialPos]);
 
   return (
     <group ref={ref} position={initialPos}>
@@ -348,55 +281,321 @@ const Player: React.FC<{
   );
 };
 
-// --- Chunk Component ---
-const Chunk: React.FC<{ data: ChunkData, position: [number, number, number] }> = ({ data, position }) => {
+// --- Environment & Time System ---
+
+const EnvironmentController: React.FC<{ time: number, season: Season, weather: Weather }> = ({ time, season, weather }) => {
+  const sunRef = useRef<THREE.DirectionalLight>(null);
+  const ambientRef = useRef<THREE.AmbientLight>(null);
+
+  // Calculate Celestial Positions
+  // 6:00 = 0 deg (Rise), 12:00 = 90 deg (Top), 18:00 = 180 deg (Set)
+  const sunAngle = ((time - 6) / 24) * Math.PI * 2;
+  const radius = 100;
+  const sunX = Math.cos(sunAngle) * radius;
+  const sunY = Math.sin(sunAngle) * radius;
+  const sunZ = -20; // Slight tilt
+
+  // Moon is opposite to sun
+  const moonX = Math.cos(sunAngle + Math.PI) * radius;
+  const moonY = Math.sin(sunAngle + Math.PI) * radius;
+  const moonZ = -20;
+
+  const isNight = time < 5.5 || time > 18.5;
+  const isDuskDawn = (time > 5 && time < 7) || (time > 17 && time < 19);
+
+  // Weather Overrides
+  const isRaining = weather === 'Rain';
+  const isSnowing = weather === 'Snow';
+  const isClear = weather === 'Clear';
+
+  useFrame(() => {
+     if (sunRef.current) {
+         sunRef.current.position.set(sunX, sunY, sunZ);
+         
+         let intensity = isNight ? 0 : isDuskDawn ? 0.5 : 1.2;
+         if (isRaining || isSnowing) intensity *= 0.4; // Dim light during storm
+
+         sunRef.current.intensity = THREE.MathUtils.lerp(sunRef.current.intensity, intensity, 0.05);
+         
+         const color = new THREE.Color();
+         if (isDuskDawn) color.setHSL(0.08, 0.8, 0.6); // Orange/Red
+         else if (isNight) color.setHSL(0.6, 0.5, 0.1); // Dark Blue
+         else if (isRaining) color.setHSL(0.6, 0.2, 0.7); // Gray Blue
+         else color.setHSL(0.1, 0.1, 1.0); // White
+
+         sunRef.current.color.lerp(color, 0.05);
+     }
+     
+     if (ambientRef.current) {
+         let intensity = isNight ? 0.15 : 0.5;
+         if (isSnowing) intensity += 0.2; // Snow reflects light
+         ambientRef.current.intensity = THREE.MathUtils.lerp(ambientRef.current.intensity, intensity, 0.05);
+     }
+  });
+
+  return (
+    <>
+       <Sky 
+         sunPosition={[sunX, sunY, sunZ]} 
+         turbidity={isRaining ? 10 : isDuskDawn ? 8 : 2} 
+         rayleigh={isRaining ? 0.5 : isDuskDawn ? 4 : isNight ? 0.1 : 0.5} 
+         mieCoefficient={isRaining ? 0.1 : 0.005} 
+         mieDirectionalG={0.8} 
+       />
+       
+       {/* 3D Celestial Bodies */}
+       <group>
+            {/* Sun Mesh */}
+            <mesh position={[sunX, sunY, sunZ]}>
+                <sphereGeometry args={[8, 32, 32]} />
+                <meshStandardMaterial 
+                    emissive="#FDB813" 
+                    emissiveIntensity={3} 
+                    color="#FDB813" 
+                    toneMapped={false} 
+                />
+            </mesh>
+            
+            {/* Moon Mesh */}
+            <mesh position={[moonX, moonY, moonZ]}>
+                <sphereGeometry args={[5, 32, 32]} />
+                <meshStandardMaterial color="#e2e8f0" roughness={0.7} />
+            </mesh>
+       </group>
+
+       {/* Stars only visible at night and clear weather */}
+       {isNight && isClear && (
+         <Stars radius={150} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
+       )}
+       
+       <ambientLight ref={ambientRef} intensity={0.5} />
+       <directionalLight 
+         ref={sunRef}
+         position={[sunX, sunY, sunZ]} 
+         intensity={1.5} 
+         castShadow 
+         shadow-mapSize={[2048, 2048]}
+         shadow-bias={-0.0005}
+       >
+          <orthographicCamera attach="shadow-camera" args={[-50, 50, 50, -50]} />
+       </directionalLight>
+
+       {/* Weather Particles */}
+       {/* Snow: Explicit setting OR Winter default if Clear */}
+       {(isSnowing || (isClear && season === 'Winter')) && (
+         <Sparkles count={800} scale={60} size={4} speed={0.4} opacity={0.8} color="#fff" position={[0, 10, 0]} noise={0.5} />
+       )}
+       
+       {/* Rain: Blue fast particles */}
+       {isRaining && (
+          // Sparkles aren't lines, but high speed and count simulates rain decently
+          <Sparkles count={1500} scale={[40, 40, 40]} size={6} speed={3} opacity={0.6} color="#a2d2ff" position={[0, 15, 0]} noise={0.2} />
+       )}
+
+       {/* Autumn Leaves */}
+       {isClear && season === 'Autumn' && (
+         <Sparkles count={200} scale={60} size={6} speed={0.2} opacity={0.7} color="#d35400" position={[0, 10, 0]} noise={1} />
+       )}
+       
+       {/* Fireflies */}
+       {isClear && isNight && (season === 'Spring' || season === 'Summer') && (
+         <Sparkles count={100} scale={50} size={3} speed={0.1} opacity={0.6} color="#aaff00" position={[0, 2, 0]} />
+       )}
+    </>
+  );
+};
+
+// --- Chunk Rendering Component ---
+
+// Helper to shift colors based on season
+const getSeasonalColor = (baseColor: string, type: string, season: Season, biome: string) => {
+    if (biome === 'snow' || biome === 'magical' || biome === 'volcanic' || biome === 'desert') return baseColor;
+  
+    const c = new THREE.Color(baseColor);
+    
+    if (type === 'ground') {
+        if (season === 'Winter') return '#e2e8f0'; // Snow cover
+        if (season === 'Autumn') { c.offsetHSL(0.05, -0.2, -0.1); return '#' + c.getHexString(); } // Dry
+    }
+    if (type === 'foliage') { // Tree leaves, bushes, grass
+        if (season === 'Winter') return '#f1f5f9'; // Snow covered
+        if (season === 'Autumn') return '#e76f51'; // Orange/Red
+        if (season === 'Spring') { c.offsetHSL(0.1, 0.2, 0.1); return '#' + c.getHexString(); } // Vibrant Green
+        if (season === 'Summer') { c.offsetHSL(0, 0, -0.1); return '#' + c.getHexString(); } // Deep Green
+    }
+    return baseColor;
+};
+
+// Memoize chunk to prevent re-renders every frame, only update when season changes
+const Chunk = React.memo(({ data, position, season }: { data: ChunkData, position: [number, number, number], season: Season }) => {
+  
+  const groundColor = getSeasonalColor(data.groundColor, 'ground', season, data.biomeType);
+
   return (
     <group position={position}>
       {/* Ground */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[CHUNK_SIZE, CHUNK_SIZE]} />
-        <meshStandardMaterial color={data.groundColor} roughness={0.8} />
+        <meshStandardMaterial color={groundColor} roughness={1} />
       </mesh>
+
+      {/* Water Layer */}
+      {data.hasWater && (
+        <mesh position={[0, 0.2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+           <planeGeometry args={[CHUNK_SIZE, CHUNK_SIZE]} />
+           <meshStandardMaterial 
+              color={data.biomeType === 'swamp' ? '#4d908e' : (season === 'Winter' ? '#a2d2ff' : '#00b4d8')} 
+              transparent opacity={season === 'Winter' ? 0.8 : 0.6} roughness={0.1} metalness={0.2} 
+           />
+        </mesh>
+      )}
       
       {data.biomeType === 'magical' && (
          <Sparkles count={50} scale={CHUNK_SIZE} size={6} speed={0.4} opacity={0.5} color="#bfa2db" position={[0, 5, 0]} />
       )}
-      {data.biomeType === 'snow' && (
-         <Sparkles count={30} scale={CHUNK_SIZE} size={4} speed={0.2} opacity={0.3} color="#fff" position={[0, 5, 0]} />
-      )}
 
       {/* Procedural Objects */}
       {data.objects.map((obj, i) => {
+        const pos: [number, number, number] = [obj.x, obj.y, obj.z];
+        const key = `obj-${i}`;
+
         if (obj.type === 'cloud') {
              return (
-                 <group key={i} position={[obj.x, obj.y, obj.z]}>
+                 <group key={key} position={pos}>
                      <Cloud opacity={0.5} speed={0.1} bounds={[obj.scale[0], 2, obj.scale[2]]} segments={10} color={obj.color} />
                  </group>
              )
         }
-        
+
+        if (obj.type === 'water') return null; // Handled as layer
+
+        // Determine Seasonal Colors
+        let renderColor = obj.color;
+        if (['tree', 'bush', 'grass', 'palm'].includes(obj.type)) {
+            renderColor = getSeasonalColor(obj.color, 'foliage', season, data.biomeType);
+        }
+        if (obj.type === 'palm' && season === 'Winter') renderColor = '#8d99ae'; // Dead/Frozen palm
+
         return (
-            <group key={`obj-${i}`} position={[obj.x, obj.y, obj.z]} rotation={[0, obj.rotation, 0]}>
-                <mesh castShadow receiveShadow scale={obj.scale}>
-                    {obj.type === 'tree' ? <coneGeometry args={[1, 1, 8]} /> : 
-                     obj.type === 'grass' ? <coneGeometry args={[1, 1, 3]} /> :
-                     obj.type === 'crystal' ? <octahedronGeometry args={[1, 0]} /> :
-                     obj.type === 'flower' ? <torusKnotGeometry args={[0.5, 0.2, 16, 4]} /> :
-                     obj.type === 'ruins' ? <boxGeometry args={[1, 1, 1]} /> :
-                     <boxGeometry args={[1, 1, 1]} />
-                    }
-                    <meshStandardMaterial 
-                        color={obj.color} 
-                        emissive={obj.type === 'crystal' ? obj.color : '#000'}
-                        emissiveIntensity={obj.type === 'crystal' ? 0.5 : 0}
-                    />
-                </mesh>
+            <group key={key} position={pos} rotation={[0, obj.rotation, 0]}>
+                {/* Trees with separate trunk and leaves */}
+                {obj.type === 'tree' && (
+                    <group>
+                        <mesh position={[0, obj.scale[1]/3, 0]} castShadow receiveShadow>
+                            <cylinderGeometry args={[0.15 * obj.scale[0], 0.25 * obj.scale[0], obj.scale[1]/2, 6]} />
+                            <meshStandardMaterial color="#4a3b2a" />
+                        </mesh>
+                        <mesh position={[0, obj.scale[1]*0.8, 0]} castShadow>
+                            <coneGeometry args={[1.2 * obj.scale[0], obj.scale[1]*0.8, 8]} />
+                            <meshStandardMaterial color={renderColor} />
+                        </mesh>
+                    </group>
+                )}
+
+                {/* Palm Trees */}
+                {obj.type === 'palm' && (
+                    <group>
+                         <mesh position={[0, obj.scale[1]/2, 0]} rotation={[0.1, 0, 0]} castShadow>
+                             <cylinderGeometry args={[0.1 * obj.scale[0], 0.15 * obj.scale[0], obj.scale[1], 5]} />
+                             <meshStandardMaterial color="#8a6a4b" />
+                         </mesh>
+                         <group position={[0, obj.scale[1], 0.1 * obj.scale[1]]}>
+                             {[0, 1, 2, 3, 4].map(idx => (
+                                 <mesh key={idx} rotation={[0.5, idx * (Math.PI*2/5), 0]} position={[0, 0, 0]}>
+                                     <boxGeometry args={[0.8 * obj.scale[0], 0.05, 2.5 * obj.scale[0]]} />
+                                     <meshStandardMaterial color={renderColor} />
+                                 </mesh>
+                             ))}
+                         </group>
+                    </group>
+                )}
+                
+                {/* Mushrooms */}
+                {obj.type === 'mushroom' && (
+                    <group>
+                        <mesh position={[0, obj.scale[1]/2, 0]}>
+                            <cylinderGeometry args={[0.2 * obj.scale[0], 0.3 * obj.scale[0], obj.scale[1], 6]} />
+                            <meshStandardMaterial color="#f1faee" />
+                        </mesh>
+                        <mesh position={[0, obj.scale[1], 0]}>
+                            <coneGeometry args={[0.8 * obj.scale[0], 0.5 * obj.scale[0], 8]} />
+                            <meshStandardMaterial color={obj.color} />
+                        </mesh>
+                    </group>
+                )}
+
+                {/* Rocks (Jagged) */}
+                {obj.type === 'rock' && (
+                    <mesh castShadow receiveShadow scale={obj.scale}>
+                        <dodecahedronGeometry args={[0.8, 0]} />
+                        <meshStandardMaterial color={season === 'Winter' ? '#dee2e6' : obj.color} roughness={0.9} />
+                    </mesh>
+                )}
+
+                {/* Bushes (Round) */}
+                {obj.type === 'bush' && (
+                    <mesh castShadow scale={obj.scale} position={[0, 0.4, 0]}>
+                         <sphereGeometry args={[0.6, 7, 6]} />
+                         <meshStandardMaterial color={renderColor} roughness={1} />
+                    </mesh>
+                )}
+
+                {/* Reeds (Thin clusters) */}
+                {obj.type === 'reed' && (
+                    <group>
+                        {[-0.1, 0.1].map((ox, idx) => (
+                            <mesh key={idx} position={[ox, obj.scale[1]/2, 0]}>
+                                <cylinderGeometry args={[0.03, 0.03, obj.scale[1], 4]} />
+                                <meshStandardMaterial color={season === 'Autumn' ? '#d4a373' : obj.color} />
+                            </mesh>
+                        ))}
+                    </group>
+                )}
+
+                {/* Dead Bushes */}
+                {obj.type === 'deadbush' && (
+                     <mesh castShadow>
+                         <dodecahedronGeometry args={[0.3, 0]} />
+                         <meshStandardMaterial color={obj.color} wireframe />
+                     </mesh>
+                )}
+                
+                {/* Simple objects fallbacks */}
+                {['grass', 'flower', 'crystal'].includes(obj.type) && (
+                    <mesh castShadow receiveShadow scale={obj.scale}>
+                        {obj.type === 'grass' ? <coneGeometry args={[1, 1, 3]} /> :
+                         obj.type === 'crystal' ? <octahedronGeometry args={[1, 0]} /> :
+                         <torusKnotGeometry args={[0.5, 0.2, 16, 4]} />
+                        }
+                        <meshStandardMaterial 
+                            color={obj.type === 'grass' ? renderColor : obj.color} 
+                            emissive={obj.type === 'crystal' ? obj.color : '#000'}
+                            emissiveIntensity={obj.type === 'crystal' ? 0.5 : 0}
+                        />
+                    </mesh>
+                )}
+
+                {obj.type === 'ruins' && (
+                    <mesh castShadow receiveShadow scale={obj.scale}>
+                         <boxGeometry args={[1, 1, 1]} />
+                         <meshStandardMaterial color={obj.color} roughness={0.9} />
+                    </mesh>
+                )}
+                
+                {obj.type === 'cactus' && (
+                    <mesh castShadow receiveShadow scale={obj.scale}>
+                         <boxGeometry args={[0.8, 1, 0.8]} />
+                         <meshStandardMaterial color={obj.color} />
+                    </mesh>
+                )}
+
             </group>
         );
       })}
     </group>
   );
-};
+}, (prev, next) => prev.data === next.data && prev.season === next.season);
+
 
 // --- Main World Component ---
 export const GameWorld: React.FC<GameWorldProps> = ({ character }) => {
@@ -404,7 +603,32 @@ export const GameWorld: React.FC<GameWorldProps> = ({ character }) => {
   const [chunks, setChunks] = useState<Map<string, ChunkData>>(new Map());
   const [activeChunkKeys, setActiveChunkKeys] = useState<string[]>([]);
   
+  // Time & Season State
+  const [time, setTime] = useState(8.0); // 8:00 AM start
+  const [season, setSeason] = useState<Season>('Spring');
+  const [weather, setWeather] = useState<Weather>('Clear');
+  
+  const [autoAdvance, setAutoAdvance] = useState(true);
+  const [timeSpeed, setTimeSpeed] = useState(1.0);
+
   const controlsRef = useRef<OrbitControlsImpl>(null);
+
+  // Timer Loop
+  useEffect(() => {
+     if (!autoAdvance) return;
+     const interval = setInterval(() => {
+         setTime(prev => {
+             // Base Rate: 1 hour every 10 seconds at speed 1.0
+             // interval 100ms. 0.01 hours per tick = 36 seconds for 1 hour
+             // Let's do: 1 hour = 20 seconds real time at 1x
+             // 1 hour = 1.0 units. 20s = 200 ticks. 1/200 = 0.005
+             let next = prev + (0.01 * timeSpeed);
+             if (next >= 24) next = 0;
+             return next;
+         });
+     }, 50);
+     return () => clearInterval(interval);
+  }, [autoAdvance, timeSpeed]);
 
   const getChunkKey = (cx: number, cz: number) => `${cx},${cz}`;
 
@@ -444,16 +668,26 @@ export const GameWorld: React.FC<GameWorldProps> = ({ character }) => {
     setActiveChunkKeys(newActiveKeys);
   }, [playerPosition[0], playerPosition[2]]); 
 
+  // Format Time for UI
+  const formatTime = (t: number) => {
+      const h = Math.floor(t);
+      const m = Math.floor((t - h) * 60);
+      return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+  }
+
+  const getSeasonIcon = () => {
+      switch(season) {
+          case 'Spring': return <Leaf size={16} className="text-green-400" />;
+          case 'Summer': return <Sun size={16} className="text-yellow-400" />;
+          case 'Autumn': return <Wind size={16} className="text-orange-400" />;
+          case 'Winter': return <Snowflake size={16} className="text-blue-200" />;
+      }
+  }
+
   return (
     <div className="w-full h-full relative bg-black">
       <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 8, 12], fov: 50 }}>
-        <Environment preset="sunset" />
-        <Sky sunPosition={[100, 20, 100]} turbidity={8} rayleigh={6} mieCoefficient={0.005} mieDirectionalG={0.8} />
-        <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
-        <ambientLight intensity={0.5} />
-        <directionalLight position={[50, 50, 25]} intensity={1.5} castShadow shadow-mapSize={[2048, 2048]}>
-            <orthographicCamera attach="shadow-camera" args={[-40, 40, 40, -40]} />
-        </directionalLight>
+        <EnvironmentController time={time} season={season} weather={weather} />
         
         <Player 
           textureUrl={character.imageData} 
@@ -474,13 +708,109 @@ export const GameWorld: React.FC<GameWorldProps> = ({ character }) => {
           const chunk = chunks.get(key);
           if (!chunk) return null;
           const [cx, cz] = key.split(',').map(Number);
-          return <Chunk key={key} data={chunk} position={[cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE]} />;
+          return <Chunk key={key} data={chunk} position={[cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE]} season={season} />;
         })}
         
-        <fog attach="fog" args={['#0f172a', 10, 70]} />
+        <fog attach="fog" args={[season === 'Winter' ? '#e0fbfc' : weather === 'Rain' ? '#1e293b' : '#0f172a', 10, 70]} />
       </Canvas>
 
-      <div className="absolute top-4 left-4 p-4 bg-slate-900/80 backdrop-blur text-white rounded-lg border border-slate-700 max-w-xs select-none shadow-lg pointer-events-none z-10">
+      {/* --- Central Control Dashboard --- */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 w-full max-w-lg pointer-events-none">
+          <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700 p-4 rounded-2xl text-white shadow-2xl flex flex-col gap-3 pointer-events-auto w-full max-w-md">
+              
+              {/* Top Row: Time Display + Season + Weather */}
+              <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-3">
+                     <div className="p-2 bg-slate-800 rounded-lg border border-slate-700">
+                        <Clock size={20} className="text-cyan-400" />
+                     </div>
+                     <div className="flex flex-col">
+                        <span className="text-2xl font-bold font-mono leading-none">{formatTime(time)}</span>
+                        <span className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Day {Math.floor(time/24) + 1}</span>
+                     </div>
+                  </div>
+
+                  <div className="h-8 w-px bg-slate-700 mx-2"></div>
+
+                  <div className="flex gap-2">
+                      <button 
+                        onClick={() => {
+                            const seasons: Season[] = ['Spring', 'Summer', 'Autumn', 'Winter'];
+                            const idx = seasons.indexOf(season);
+                            setSeason(seasons[(idx + 1) % 4]);
+                        }}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-md transition border border-slate-700"
+                        title="Change Season"
+                      >
+                          {getSeasonIcon()}
+                          <span className="text-xs font-bold">{season}</span>
+                      </button>
+
+                      <div className="flex bg-slate-800 rounded-md p-1 border border-slate-700">
+                          <button 
+                             onClick={() => setWeather('Clear')}
+                             className={`p-1 rounded ${weather === 'Clear' ? 'bg-yellow-500 text-white' : 'text-slate-400 hover:text-white'}`}
+                             title="Clear"
+                          ><Sun size={14}/></button>
+                          <button 
+                             onClick={() => setWeather('Rain')}
+                             className={`p-1 rounded ${weather === 'Rain' ? 'bg-blue-500 text-white' : 'text-slate-400 hover:text-white'}`}
+                             title="Rain"
+                          ><CloudRain size={14}/></button>
+                          <button 
+                             onClick={() => setWeather('Snow')}
+                             className={`p-1 rounded ${weather === 'Snow' ? 'bg-white text-slate-900' : 'text-slate-400 hover:text-white'}`}
+                             title="Snow"
+                          ><Snowflake size={14}/></button>
+                      </div>
+                  </div>
+              </div>
+              
+              {/* Middle Row: Time Scrubber */}
+              <div className="w-full flex items-center gap-2">
+                  <Sun size={12} className="text-yellow-500" />
+                  <input 
+                    type="range" 
+                    min="0" max="24" step="0.1"
+                    value={time}
+                    onChange={(e) => setTime(parseFloat(e.target.value))}
+                    className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                  />
+                  <Moon size={12} className="text-blue-300" />
+              </div>
+
+              {/* Bottom Row: Speed Control & Pause */}
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                  <div className="flex items-center gap-2">
+                      <Zap size={12} />
+                      <span>Time Speed: {timeSpeed.toFixed(1)}x</span>
+                      <input 
+                        type="range" 
+                        min="0" max="5" step="0.5"
+                        value={timeSpeed}
+                        onChange={(e) => setTimeSpeed(parseFloat(e.target.value))}
+                        className="w-20 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                      />
+                  </div>
+                  
+                  <button 
+                    onClick={() => setAutoAdvance(!autoAdvance)}
+                    className={`flex items-center gap-1 px-2 py-1 rounded border ${
+                        autoAdvance 
+                        ? 'bg-green-500/10 border-green-500/50 text-green-400' 
+                        : 'bg-red-500/10 border-red-500/50 text-red-400'
+                    }`}
+                  >
+                      {autoAdvance ? <Pause size={10} /> : <Play size={10} />}
+                      {autoAdvance ? 'RUNNING' : 'PAUSED'}
+                  </button>
+              </div>
+
+          </div>
+      </div>
+
+      {/* Character Card - Left */}
+      <div className="absolute top-24 left-4 p-4 bg-slate-900/80 backdrop-blur text-white rounded-lg border border-slate-700 max-w-xs select-none shadow-lg pointer-events-none z-10 transform scale-90 origin-top-left">
         <div className="flex items-center gap-4 mb-2">
             <div className="w-12 h-12 bg-slate-800 rounded-lg overflow-hidden border border-cyan-500 flex items-center justify-center relative">
                 <div className="w-full h-full overflow-hidden relative">
